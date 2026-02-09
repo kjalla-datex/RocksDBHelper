@@ -8,6 +8,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -26,27 +27,38 @@ public class RocksDbFinalExporterOneCSVWithPropertiesFile {
     private static byte[] ENC_IV;
     private static final Pattern UUID_PATTERN =Pattern.compile("[0-9a-fA-F\\-]{36}");
     private static final Pattern HEX32_PATTERN = Pattern.compile("[0-9a-fA-F]{32}");
+    private static final SimpleDateFormat LOG_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+
+
+    private static void logWithTime(String message) {
+        System.out.println("[" + LOG_FORMAT.format(new Date()) + "] " + message);
+    }
 
 
     public static void main(String[] args) throws Exception {
         String configPath = args.length>0?args[0]:"/Users/kjalla/IdeaProjects/RocksDBHelper/src/main/resources/rocks-exporter.properties";
         loadConfig(configPath);
-        System.out.println("Using config file: " + configPath);
-        System.out.println("Orphan limit = " + ORPHAN_LIMIT);
-        System.out.println("Index prefix = " + INDEX_PREFIX);
+        logWithTime("Using config file: " + configPath);
+        logWithTime("Orphan limit = " + ORPHAN_LIMIT);
+        logWithTime("Index prefix = " + INDEX_PREFIX);
         computeEncryptionKeyIv();
         File outDir = new File(OUTPUT_DIR);
         outDir.mkdirs();
         File unified = new File(outDir, "orphan_indexes.csv");
         try (PrintWriter writer = new PrintWriter(unified)) {
             writer.println("type,name,key,related,cabinet_id");
-            System.out.println("=========== LOADING CABINETS ===========");
+            logWithTime("=========== LOADING CABINETS ===========");
+            long startTime = System.currentTimeMillis();
             Set<String> cabinetIds = loadCabinetIds();
-            System.out.println("=========== SCANNING INDEXES ===========");
+            long loadTime = System.currentTimeMillis() - startTime;
+            logWithTime("Loaded " + cabinetIds.size() + " cabinet IDs in " + loadTime + "ms");
+            logWithTime("=========== SCANNING INDEXES ===========");
+            startTime = System.currentTimeMillis();
             int written = exportOrphanIndexes(writer, cabinetIds, ORPHAN_LIMIT);
-            System.out.println("Exported orphan indexes = " + written);
+            long scanTime = System.currentTimeMillis() - startTime;
+            logWithTime("Exported " + written + " orphan indexes in " + scanTime + "ms");
         }
-        System.out.println("CSV written → " + unified.getAbsolutePath());
+        logWithTime("CSV written → " + unified.getAbsolutePath());
     }
 
     // =========================================================
@@ -54,6 +66,7 @@ public class RocksDbFinalExporterOneCSVWithPropertiesFile {
     // =========================================================
 
     private static void loadConfig(String path) throws Exception {
+        logWithTime("Loading configuration from: " + path);
         Properties props = new Properties();
         try (InputStream in = new FileInputStream(path)) {
             props.load(in);
@@ -68,12 +81,13 @@ public class RocksDbFinalExporterOneCSVWithPropertiesFile {
         );
 
         INDEX_PREFIX = props.getProperty("INDEX_PREFIX", DEFAULT_INDEX_PREFIX);
-        System.out.println("DEVICE_UUID  = " + DEVICE_UUID);
-        System.out.println("INDEX_BASE   = " + INDEX_BASE);
-        System.out.println("CABINET_BASE = " + CABINET_BASE);
-        System.out.println("OUTPUT_DIR   = " + OUTPUT_DIR);
-        System.out.println("ORPHAN_LIMIT = " + ORPHAN_LIMIT);
-        System.out.println("INDEX_PREFIX = " + INDEX_PREFIX);
+        logWithTime("DEVICE_UUID  = " + DEVICE_UUID);
+        logWithTime("INDEX_BASE   = " + INDEX_BASE);
+        logWithTime("CABINET_BASE = " + CABINET_BASE);
+        logWithTime("OUTPUT_DIR   = " + OUTPUT_DIR);
+        logWithTime("ORPHAN_LIMIT = " + ORPHAN_LIMIT);
+        logWithTime("INDEX_PREFIX = " + INDEX_PREFIX);
+        logWithTime("Configuration loaded successfully");
     }
 
     private static String require(Properties p,String key) {
@@ -89,8 +103,19 @@ public class RocksDbFinalExporterOneCSVWithPropertiesFile {
     // =========================================================
 
     private static Set<String> loadCabinetIds() throws Exception {
+        logWithTime("Starting cabinet ID scan from: " + CABINET_BASE);
         Set<String> allCabinetIds = new HashSet<>();
-        for (File folder : findFolders(new File(CABINET_BASE))) {
+        List<File> folders = findFolders(new File(CABINET_BASE));
+        logWithTime("Found " + folders.size() + " cabinet folders to process");
+
+        int folderCount = 0;
+        long totalKeys = 0;
+        for (File folder : folders) {
+            folderCount++;
+            logWithTime("Processing cabinet folder " + folderCount + "/" + folders.size() + ": " + folder.getName());
+            long folderStartTime = System.currentTimeMillis();
+            long folderKeys = 0;
+
             for (File shard : findRocksShards(new File(folder, "rocks"))) {
                 try (RocksDB db = RocksDB.openReadOnly(shard.getAbsolutePath());
                      RocksIterator it = db.newIterator()) {
@@ -99,11 +124,18 @@ public class RocksDbFinalExporterOneCSVWithPropertiesFile {
                         String uuid = bytesToUuidIfPossible(key);
                         if (uuid != null) {
                             allCabinetIds.add(uuid.toLowerCase());
+                            folderKeys++;
+                            totalKeys++;
                         }
                     }
                 }
             }
+
+            long folderTime = System.currentTimeMillis() - folderStartTime;
+            logWithTime("Folder '" + folder.getName() + "' processed: " + folderKeys + " keys in " + folderTime + "ms");
         }
+
+        logWithTime("Cabinet loading complete: " + allCabinetIds.size() + " unique cabinet IDs from " + totalKeys + " total keys");
         return allCabinetIds;
     }
 
@@ -181,21 +213,46 @@ public class RocksDbFinalExporterOneCSVWithPropertiesFile {
     private static int exportOrphanIndexes(PrintWriter writer,
                                            Set<String> cabinetIds,
                                            int limit) throws Exception {
+        logWithTime("Starting orphan index scan from: " + INDEX_BASE);
+        List<File> folders = findFolders(new File(INDEX_BASE));
+        logWithTime("Found " + folders.size() + " index folders to scan");
+
         int orphanCount = 0;
-        for (File folder : findFolders(new File(INDEX_BASE))) {
+        int folderCount = 0;
+        long totalKeysProcessed = 0;
+        long indexKeysProcessed = 0;
+
+        for (File folder : folders) {
+            folderCount++;
             String name = folder.getName();
+            logWithTime("Scanning index folder " + folderCount + "/" + folders.size() + ": " + name);
+            long folderStartTime = System.currentTimeMillis();
+            long folderKeys = 0;
+            long folderIndexKeys = 0;
+            long folderOrphans = 0;
+
             for (File shard : findRocksShards(new File(folder, "rocks"))) {
+                logWithTime("  Processing shard: " + shard.getName());
                 try (RocksDB db = RocksDB.openReadOnly(shard.getAbsolutePath());
                      RocksIterator it = db.newIterator()) {
                     for (it.seekToFirst(); it.isValid(); it.next()) {
+                        folderKeys++;
+                        totalKeysProcessed++;
+
                         byte[] keyBytes = it.key();
                         byte[] valBytes = it.value();
                         String keyStr = safeUtf8(decrypt(keyBytes));
+
                         if (!keyStr.contains(INDEX_PREFIX)) continue;
+
+                        folderIndexKeys++;
+                        indexKeysProcessed++;
+
                         byte[] decryptedVal = decrypt(valBytes);
                         Set<String> uuids = extractUuidsFromBytes(decryptedVal);
                         uuids.addAll(extractUuidsFromString(safeUtf8(decryptedVal)));
                         boolean related = uuids.stream().anyMatch(u -> cabinetIds.contains(u.toLowerCase()));
+
                         if (!related) {
                             writer.println(
                                     csv("index") + "," +
@@ -205,15 +262,32 @@ public class RocksDbFinalExporterOneCSVWithPropertiesFile {
                                             csv("")
                             );
                             orphanCount++;
+                            folderOrphans++;
+
                             if (orphanCount >= limit) {
-                                System.out.println("Reached orphan limit. Stopping scan.");
+                                logWithTime("Reached orphan limit (" + limit + "). Stopping scan.");
+                                logWithTime("Final stats: processed " + totalKeysProcessed + " total keys, "
+                                         + indexKeysProcessed + " index keys, found " + orphanCount + " orphans");
                                 return orphanCount;
                             }
+                        }
+
+                        // Progress logging every 10000 keys
+                        if (totalKeysProcessed % 10000 == 0) {
+                            logWithTime("  Progress: " + totalKeysProcessed + " keys processed, "
+                                     + indexKeysProcessed + " index keys, " + orphanCount + " orphans found");
                         }
                     }
                 }
             }
+
+            long folderTime = System.currentTimeMillis() - folderStartTime;
+            logWithTime("Folder '" + name + "' complete: " + folderKeys + " keys (" + folderIndexKeys
+                     + " index keys), " + folderOrphans + " orphans found in " + folderTime + "ms");
         }
+
+        logWithTime("Index scan complete: processed " + totalKeysProcessed + " total keys, "
+                 + indexKeysProcessed + " index keys, found " + orphanCount + " orphans");
         return orphanCount;
     }
 
