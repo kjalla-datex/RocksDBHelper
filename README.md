@@ -57,8 +57,8 @@ mvn clean package
 ```
 
 This will create two JAR files in the `target/` directory:
-- `RocksDBHelper-1.0-SNAPSHOT.jar` - The fat JAR (~7MB) with all dependencies
-- `original-RocksDBHelper-1.0-SNAPSHOT.jar` - The original JAR without dependencies (~15KB)
+- `RocksDBHelper-1.0-SNAPSHOT.jar` - The fat JAR (~6.8MB) with all dependencies
+- `original-RocksDBHelper-1.0-SNAPSHOT.jar` - The original JAR without dependencies (~17KB)
 
 ### Build Output
 
@@ -69,6 +69,33 @@ After a successful build, you'll see output similar to:
 [INFO] Including org.apache.thrift:libthrift:jar:0.9.1 in the shaded jar.
 [INFO] BUILD SUCCESS
 ```
+
+### Maven Dependency Issues
+
+If you encounter Maven dependency resolution errors like:
+```
+Could not transfer artifact org.codehaus.plexus:plexus-utils:jar:3.5.1 from/to...
+```
+
+Follow these steps to resolve:
+
+1. **Clear corrupted Maven cache:**
+   ```bash
+   rm -rf ~/.m2/repository/org/apache/maven/plugins/maven-resources-plugin
+   rm -rf ~/.m2/repository/org/codehaus/plexus
+   ```
+
+2. **Clean and rebuild:**
+   ```bash
+   mvn clean -U
+   mvn compile
+   mvn package
+   ```
+
+3. **Alternative approach - purge specific dependencies:**
+   ```bash
+   mvn dependency:purge-local-repository -DmanualInclude="org.codehaus.plexus:plexus-utils"
+   ```
 
 ## Running the Application
 
@@ -126,11 +153,36 @@ The project includes the following key dependencies (automatically included in t
 
 ## Troubleshooting
 
-### Common Issues
+### Maven Dependency Resolution Issues
+
+The most common build issue involves corrupted Maven local repository cache. If you see errors like:
+```
+Could not transfer artifact org.codehaus.plexus:plexus-utils:jar:3.5.1...
+Failed to execute goal org.apache.maven.plugins:maven-resources-plugin...
+```
+
+**Solution:**
+1. Clear the problematic dependencies from your local Maven cache
+2. Force Maven to re-download all dependencies
+3. Rebuild the project
+
+```bash
+# Clear corrupted cache
+rm -rf ~/.m2/repository/org/apache/maven/plugins/maven-resources-plugin
+rm -rf ~/.m2/repository/org/codehaus/plexus
+
+# Clean and rebuild with forced updates
+mvn clean -U
+mvn compile
+mvn package
+```
+
+### Other Common Issues
 
 1. **File Not Found Errors**: Ensure the paths in your configuration file are correct and accessible
 2. **Permission Errors**: Make sure the application has read access to RocksDB files and write access to the output directory
 3. **Memory Issues**: For large datasets, consider increasing JVM memory: `java -Xmx4g -jar target/RocksDBHelper-1.0-SNAPSHOT.jar`
+4. **Java Version**: Ensure you're using Java 8 or higher: `java -version`
 
 ### Debug Mode
 
